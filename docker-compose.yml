@@ -1,0 +1,7 @@
+services:
+  master:
+    build: .
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    command: ["-port", "8080"]
