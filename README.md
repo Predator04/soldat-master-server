@@ -27,11 +27,19 @@ go build -o soldat-master .
 ./soldat-master -port 8080
 ```
 
+The port is configurable three ways (in priority order: `-port` flag, then
+`SOLDAT_MASTER_PORT` / `PORT` env vars, then the 8080 default):
+
+```bash
+./soldat-master -port 9000          # flag
+SOLDAT_MASTER_PORT=9000 ./soldat-master   # env
+```
+
 Flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-port` | `8080` | HTTP listen port |
+| `-port` | `SOLDAT_MASTER_PORT`/`PORT`/`8080` | HTTP listen port |
 | `-addr` | `0.0.0.0` | bind address |
 | `-ttl` | `90s` | heartbeat expiry window |
 
@@ -82,6 +90,8 @@ After=network.target
 
 [Service]
 ExecStart=/opt/soldat-master/soldat-master -port 8080
+# Or configure the port via env instead of the flag:
+# Environment=SOLDAT_MASTER_PORT=9000
 Restart=always
 RestartSec=3
 User=nobody

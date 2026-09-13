@@ -22,7 +22,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,7 +67,7 @@ var (
 )
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP listen port")
+	port := flag.Int("port", defaultPort(), "HTTP listen port (overrides SOLDAT_MASTER_PORT / PORT env)")
 	addr := flag.String("addr", "0.0.0.0", "bind address")
 	ttl := flag.Duration("ttl", 90*time.Second, "server heartbeat expiry window")
 	flag.Parse()
@@ -87,6 +89,20 @@ func main() {
 	if err := http.ListenAndServe(host, nil); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
+}
+
+// defaultPort resolves the listen port from env (SOLDAT_MASTER_PORT, then PORT)
+// so it can be configured without a flag (systemd Environment=, docker -e, etc.).
+// A -port flag always wins; otherwise 8080.
+func defaultPort() int {
+	for _, key := range []string{"SOLDAT_MASTER_PORT", "PORT"} {
+		if v := os.Getenv(key); v != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 && n <= 65535 {
+				return n
+			}
+		}
+	}
+	return 8080
 }
 
 // sourceIP returns the client's public IP (IPv4 preferred) from the request,
