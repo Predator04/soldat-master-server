@@ -43,6 +43,46 @@ Flags:
 | `-addr` | `0.0.0.0` | bind address |
 | `-ttl` | `90s` | heartbeat expiry window |
 
+## Relay (v1.25): online play with no port forwarding
+
+The same binary also runs a **game relay** at `/relay` (WebSocket). When a
+player ticks *Host through the relay* in the game, the host and every
+joining player open an **outgoing** connection to this server, which passes
+the game traffic between them. Nobody has to open a port, and it works behind
+CGNAT, phone hotspots and strict routers. The host gets a join code like
+`R-7KQ2MX`; friends type it into Join Game.
+
+- The server must be reachable from the internet (that's the one place a port
+  is open, 8080 by default). Put it on any small VPS or container host.
+- Set its address in the game under **Join → Master Server URL** (e.g.
+  `http://your-server:8080` or `https://relay.example.com`). The game uses
+  the same URL for the server list and the relay (`ws://…/relay`, or `wss://`
+  for https).
+- Relay games also show in *Find Games* (marked RELAY) if the host ticks
+  *List on the master server*.
+- Each room closes when its host leaves. Up to 16 players per room.
+- Bandwidth: a busy 8-player match is roughly 30–60 KB/s through the server.
+
+### Deploying it
+
+Any of these work; all you need is one public port.
+
+**Docker (any VPS):**
+```bash
+docker build -t soldat-master .
+docker run -d --restart unless-stopped -p 8080:8080 soldat-master
+```
+
+**Plain binary (Linux VPS):**
+```bash
+./dist/soldat-master-linux-amd64 -port 8080
+```
+(keep it running with `systemd`, `tmux`, or your host's process manager).
+
+**Behind HTTPS** (recommended for a public server): put Caddy or nginx in
+front and proxy `/` (including WebSocket upgrades) to port 8080; players then
+use `https://your-domain` as the master URL.
+
 ## Endpoints
 
 | Method | Path | Purpose |

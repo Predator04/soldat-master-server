@@ -42,6 +42,7 @@ type Server struct {
 	Max        int    `json:"max"`        // max players
 	Password   bool   `json:"password"`   // requires password
 	Version    string `json:"version"`    // game version string
+	Relay      string `json:"relay,omitempty"` // "R-XXXXXX" when hosted through /relay
 	LastSeenMS int64  `json:"last_seen_ms"` // epoch ms heartbeat stamp
 
 	lastSeen time.Time `json:"-"`
@@ -56,6 +57,7 @@ type registerReq struct {
 	Max      int    `json:"max"`
 	Password bool   `json:"password"`
 	Version  string `json:"version"`
+	Relay    string `json:"relay"`
 }
 
 var (
@@ -75,6 +77,7 @@ func main() {
 	http.HandleFunc("/register", handleRegister)
 	http.HandleFunc("/list", handleList)
 	http.HandleFunc("/health", handleHealth)
+	http.HandleFunc("/relay", handleRelay)
 	http.HandleFunc("/", handleDashboard)
 
 	go func() {
@@ -141,12 +144,16 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Port <= 0 || req.Port > 65535 {
+	relay := strings.TrimSpace(req.Relay)
+	if relay == "" && (req.Port <= 0 || req.Port > 65535) {
 		http.Error(w, "invalid port", http.StatusBadRequest)
 		return
 	}
 	ip := sourceIP(r)
 	key := fmt.Sprintf("%s:%d", ip, req.Port)
+	if relay != "" {
+		key = relay // relay games are joined by code, not address
+	}
 
 	mu.Lock()
 	srv, ok := servers[key]
@@ -161,6 +168,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	srv.Max = req.Max
 	srv.Password = req.Password
 	srv.Version = req.Version
+	srv.Relay = relay
 	srv.lastSeen = time.Now()
 	srv.LastSeenMS = srv.lastSeen.UnixMilli()
 	mu.Unlock()
