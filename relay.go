@@ -6,14 +6,16 @@
 //
 // Endpoint: GET /relay (WebSocket upgrade). Protocol, all JSON text frames
 // except game data:
-//   client -> {"op":"host","version":"1.25.0","name":"William's game"}
-//   server -> {"op":"hosted","code":"R7KQ2M","id":1}
-//   client -> {"op":"join","code":"R7KQ2M"}
-//   server -> {"op":"joined","id":123456}            (to the joiner)
-//             {"op":"peer_connected","id":123456}    (to the host)
-//             {"op":"peer_disconnected","id":123456} (to the host)
-//   host   -> {"op":"kick","id":123456}
-//   error  -> {"op":"error","msg":"..."} and the socket closes.
+//
+//	client -> {"op":"host","version":"1.25.0","name":"William's game"}
+//	server -> {"op":"hosted","code":"R7KQ2M","id":1}
+//	client -> {"op":"join","code":"R7KQ2M"}
+//	server -> {"op":"joined","id":123456}            (to the joiner)
+//	          {"op":"peer_connected","id":123456}    (to the host)
+//	          {"op":"peer_disconnected","id":123456} (to the host)
+//	host   -> {"op":"kick","id":123456}
+//	error  -> {"op":"error","msg":"..."} and the socket closes.
+//
 // Game data are binary frames. Host -> server: 4-byte little-endian target
 // peer id + payload (0 = every client, -N = every client except N).
 // Server -> host: 4-byte little-endian source id + payload. Client <-> server:
@@ -45,6 +47,8 @@ import (
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 const relayMaxFrame = 1 << 20 // 1 MiB per message is plenty for game packets
 const relayMaxClients = 16
+const relayMaxRooms = 300    // whole server (a 1 GB VM)
+const relayMaxRoomsPerIP = 8 // a household or a mobile carrier NAT
 
 type wsConn struct {
 	c    net.Conn
@@ -70,6 +74,7 @@ func (w *wsConn) writeFrame(op byte, data []byte) error {
 		hdr = append(hdr, 127, 0, 0, 0, 0, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 	}
 	w.c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	w.c.SetWriteDeadline(time.Now().Add(5 * time.Second)) // a stalled peer must not block the room
 	if _, err := w.c.Write(append(hdr, data...)); err != nil {
 		w.dead = true
 		return err
@@ -186,6 +191,7 @@ func upgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
 
 type relayRoom struct {
 	code    string
+	ip      string
 	name    string
 	version string
 	host    *wsConn
@@ -240,7 +246,7 @@ func handleRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	switch hello.Op {
 	case "host":
-		relayHost(ws, hello)
+		relayHost(ws, hello, sourceIP(r))
 	case "join":
 		relayJoin(ws, strings.ToUpper(strings.TrimSpace(hello.Code)))
 	default:
@@ -248,9 +254,20 @@ func handleRelay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func relayHost(ws *wsConn, hello relayHello) {
-	room := &relayRoom{host: ws, clients: map[int32]*wsConn{}, name: hello.Name, version: hello.Version, created: time.Now()}
+func relayHost(ws *wsConn, hello relayHello, ip string) {
+	room := &relayRoom{host: ws, ip: ip, clients: map[int32]*wsConn{}, name: clip(hello.Name, 48), version: clip(hello.Version, 24), created: time.Now()}
 	roomsMu.Lock()
+	perIP := 0
+	for _, rm := range rooms {
+		if rm.ip == ip {
+			perIP++
+		}
+	}
+	if len(rooms) >= relayMaxRooms || perIP >= relayMaxRoomsPerIP {
+		roomsMu.Unlock()
+		ws.text(map[string]string{"op": "error", "msg": "the relay is full right now, try again in a bit"})
+		return
+	}
 	for {
 		room.code = newCode()
 		if _, taken := rooms[room.code]; !taken {
@@ -351,4 +368,21 @@ func relayRooms() int {
 	roomsMu.Lock()
 	defer roomsMu.Unlock()
 	return len(rooms)
+}
+
+// relayRoomExists reports whether a relay code is a live room (so /register
+// can't list made-up relay games).
+func relayRoomExists(code string) bool {
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+	_, ok := rooms[code]
+	return ok
+}
+
+func clip(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len([]rune(s)) > n {
+		return string([]rune(s)[:n])
+	}
+	return s
 }

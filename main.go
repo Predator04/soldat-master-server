@@ -5,13 +5,17 @@
 // game port they report. Clients GET /list to browse live servers.
 //
 // Build (any platform, no deps):
-//   go build -o soldat-master .
+//
+//	go build -o soldat-master .
+//
 // Run:
-//   ./soldat-master -port 8080
+//
+//	./soldat-master -port 8080
 //
 // Cross-compile (see build.sh):
-//   GOOS=linux GOARCH=amd64 go build -o soldat-master-linux-amd64 .
-//   GOOS=windows GOARCH=amd64 go build -o soldat-master-windows-amd64.exe .
+//
+//	GOOS=linux GOARCH=amd64 go build -o soldat-master-linux-amd64 .
+//	GOOS=windows GOARCH=amd64 go build -o soldat-master-windows-amd64.exe .
 package main
 
 import (
@@ -32,18 +36,18 @@ import (
 
 // Server is one registered dedicated game host.
 type Server struct {
-	ID         string `json:"id"`         // "ip:port" — stable key
-	Name       string `json:"name"`       // host-configured server name
-	IP         string `json:"ip"`         // public IP captured from the register request
-	Port       int    `json:"port"`       // game (ENet UDP) port
-	Map        string `json:"map"`        // current map name
-	Mode       string `json:"mode"`       // current game mode
-	Players    int    `json:"players"`    // current player count
-	Max        int    `json:"max"`        // max players
-	Password   bool   `json:"password"`   // requires password
-	Version    string `json:"version"`    // game version string
+	ID         string `json:"id"`              // "ip:port" — stable key
+	Name       string `json:"name"`            // host-configured server name
+	IP         string `json:"ip"`              // public IP captured from the register request
+	Port       int    `json:"port"`            // game (ENet UDP) port
+	Map        string `json:"map"`             // current map name
+	Mode       string `json:"mode"`            // current game mode
+	Players    int    `json:"players"`         // current player count
+	Max        int    `json:"max"`             // max players
+	Password   bool   `json:"password"`        // requires password
+	Version    string `json:"version"`         // game version string
 	Relay      string `json:"relay,omitempty"` // "R-XXXXXX" when hosted through /relay
-	LastSeenMS int64  `json:"last_seen_ms"` // epoch ms heartbeat stamp
+	LastSeenMS int64  `json:"last_seen_ms"`    // epoch ms heartbeat stamp
 
 	lastSeen time.Time `json:"-"`
 }
@@ -89,7 +93,8 @@ func main() {
 
 	host := net.JoinHostPort(*addr, fmt.Sprintf("%d", *port))
 	log.Printf("soldat-master-server listening on http://%s (ttl=%s)", host, *ttl)
-	if err := http.ListenAndServe(host, nil); err != nil {
+	hs := &http.Server{Addr: host, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+	if err := hs.ListenAndServe(); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
 }
@@ -113,7 +118,9 @@ func defaultPort() int {
 // so NAT'd hosts advertise their external IP automatically.
 func sourceIP(r *http.Request) string {
 	// Reverse proxies can pass the real client IP here.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+	// Only trusted when running behind one (SOLDAT_TRUST_PROXY=1); otherwise
+	// anyone could spoof their address in the list.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && os.Getenv("SOLDAT_TRUST_PROXY") == "1" {
 		parts := strings.Split(xff, ",")
 		ip := strings.TrimSpace(parts[0])
 		if net.ParseIP(ip) != nil {
@@ -140,11 +147,16 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req registerReq
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	relay := strings.TrimSpace(req.Relay)
+	relay := strings.ToUpper(strings.TrimSpace(req.Relay))
+	if relay != "" && !relayRoomExists(relay) {
+		http.Error(w, "unknown relay code", http.StatusBadRequest)
+		return
+	}
 	if relay == "" && (req.Port <= 0 || req.Port > 65535) {
 		http.Error(w, "invalid port", http.StatusBadRequest)
 		return
@@ -157,13 +169,18 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	mu.Lock()
 	srv, ok := servers[key]
+	if !ok && len(servers) >= 1000 {
+		mu.Unlock()
+		http.Error(w, "server list full", http.StatusServiceUnavailable)
+		return
+	}
 	if !ok {
 		srv = &Server{ID: key, IP: ip, Port: req.Port}
 		servers[key] = srv
 	}
-	srv.Name = req.Name
-	srv.Map = req.Map
-	srv.Mode = req.Mode
+	srv.Name = clip(req.Name, 48)
+	srv.Map = clip(req.Map, 48)
+	srv.Mode = clip(req.Mode, 24)
 	srv.Players = req.Players
 	srv.Max = req.Max
 	srv.Password = req.Password
