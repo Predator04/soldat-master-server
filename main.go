@@ -132,6 +132,14 @@ func sourceIP(r *http.Request) string {
 		// RemoteAddr may lack a port in some tests.
 		host = r.RemoteAddr
 	}
+	// A game server on the same machine registers over loopback; advertise the
+	// machine's public address instead (SOLDAT_PUBLIC_IP), or players would be
+	// told to connect to 127.0.0.1.
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if pub := strings.TrimSpace(os.Getenv("SOLDAT_PUBLIC_IP")); pub != "" {
+			return pub
+		}
+	}
 	// Prefer IPv4 for NAT simplicity.
 	if ip := net.ParseIP(host); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
