@@ -58,7 +58,10 @@ sed -i "s|--name=$NAME|\"--name=$NAME\"|" /etc/systemd/system/soldat-game.servic
 
 # Master advertises this box's public IP for the loopback registration.
 mkdir -p /etc/systemd/system/soldat-master.service.d
-printf '[Service]\nEnvironment=SOLDAT_PUBLIC_IP=%s\n' "$PUBLIC_IP" > /etc/systemd/system/soldat-master.service.d/public-ip.conf
+DROPIN=/etc/systemd/system/soldat-master.service.d/public-ip.conf
+WANT=$(printf '[Service]\nEnvironment=SOLDAT_PUBLIC_IP=%s' "$PUBLIC_IP")
+MASTER_RESTART=0
+if [ "$(cat "$DROPIN" 2>/dev/null)" != "$WANT" ]; then echo "$WANT" > "$DROPIN"; MASTER_RESTART=1; fi
 
 # Game (ENet) + server query ports, UDP.
 for p in 7777 7778; do
@@ -86,7 +89,7 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable --now soldat-game-update.timer >/dev/null
-systemctl restart soldat-master
+[ "$MASTER_RESTART" = 1 ] && systemctl restart soldat-master  # only when the setting changed: a restart drops live relay games
 if [ "$CHANGED" = 1 ] || ! systemctl is-active -q soldat-game; then
   systemctl enable soldat-game >/dev/null 2>&1; systemctl restart soldat-game
 fi
