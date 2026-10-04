@@ -27,10 +27,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -82,6 +84,23 @@ func main() {
 	http.HandleFunc("/list", handleList)
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/relay", handleRelay)
+	http.HandleFunc("/report", handleReport)
+	http.HandleFunc("/leaderboard", handleLeaderboard)
+	http.HandleFunc("/profile", handleProfile)
+	http.HandleFunc("/maps", handleMapList)
+	http.HandleFunc("/maps/get", handleMapGet)
+	http.HandleFunc("/maps/upload", handleMapUpload)
+	loadStats()
+	loadMaps()
+	go saveStatsLoop()
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		<-sig
+		saveStats()
+		saveMapIndex()
+		os.Exit(0)
+	}()
 	http.HandleFunc("/", handleDashboard)
 
 	go func() {
