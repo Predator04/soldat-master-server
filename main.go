@@ -38,32 +38,34 @@ import (
 
 // Server is one registered dedicated game host.
 type Server struct {
-	ID         string `json:"id"`              // "ip:port" — stable key
-	Name       string `json:"name"`            // host-configured server name
-	IP         string `json:"ip"`              // public IP captured from the register request
-	Port       int    `json:"port"`            // game (ENet UDP) port
-	Map        string `json:"map"`             // current map name
-	Mode       string `json:"mode"`            // current game mode
-	Players    int    `json:"players"`         // current player count
-	Max        int    `json:"max"`             // max players
-	Password   bool   `json:"password"`        // requires password
-	Version    string `json:"version"`         // game version string
-	Relay      string `json:"relay,omitempty"` // "R-XXXXXX" when hosted through /relay
-	LastSeenMS int64  `json:"last_seen_ms"`    // epoch ms heartbeat stamp
+	ID         string   `json:"id"`              // "ip:port" — stable key
+	Name       string   `json:"name"`            // host-configured server name
+	IP         string   `json:"ip"`              // public IP captured from the register request
+	Port       int      `json:"port"`            // game (ENet UDP) port
+	Map        string   `json:"map"`             // current map name
+	Mode       string   `json:"mode"`            // current game mode
+	Players    int      `json:"players"`         // current player count
+	Max        int      `json:"max"`             // max players
+	Password   bool     `json:"password"`        // requires password
+	Version    string   `json:"version"`         // game version string
+	Relay      string   `json:"relay,omitempty"` // "R-XXXXXX" when hosted through /relay
+	Names      []string `json:"names,omitempty"` // who's playing (friends list: "online now / join")
+	LastSeenMS int64    `json:"last_seen_ms"`    // epoch ms heartbeat stamp
 
 	lastSeen time.Time `json:"-"`
 }
 
 type registerReq struct {
-	Name     string `json:"name"`
-	Port     int    `json:"port"`
-	Map      string `json:"map"`
-	Mode     string `json:"mode"`
-	Players  int    `json:"players"`
-	Max      int    `json:"max"`
-	Password bool   `json:"password"`
-	Version  string `json:"version"`
-	Relay    string `json:"relay"`
+	Name     string   `json:"name"`
+	Port     int      `json:"port"`
+	Map      string   `json:"map"`
+	Mode     string   `json:"mode"`
+	Players  int      `json:"players"`
+	Max      int      `json:"max"`
+	Password bool     `json:"password"`
+	Version  string   `json:"version"`
+	Relay    string   `json:"relay"`
+	Names    []string `json:"names"`
 }
 
 var (
@@ -213,6 +215,16 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	srv.Password = req.Password
 	srv.Version = req.Version
 	srv.Relay = relay
+	names := make([]string, 0, len(req.Names))
+	for i, n := range req.Names {
+		if i >= 32 {
+			break
+		}
+		if c := cleanText(n, 32); c != "" {
+			names = append(names, c)
+		}
+	}
+	srv.Names = names // fresh slice: /list may still be encoding the old one
 	srv.lastSeen = time.Now()
 	srv.LastSeenMS = srv.lastSeen.UnixMilli()
 	mu.Unlock()

@@ -172,7 +172,7 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 			p = &Profile{ID: id}
 			profiles[id] = p
 		}
-		if nm := clip(strings.TrimSpace(rp.Name), 24); nm != "" {
+		if nm := cleanText(rp.Name, 32); nm != "" {
 			p.Name = nm
 		}
 		p.Kills += clampInt(rp.Kills, 0, 1000)
