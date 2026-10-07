@@ -50,6 +50,7 @@ type Server struct {
 	Version    string   `json:"version"`         // game version string
 	Relay      string   `json:"relay,omitempty"` // "R-XXXXXX" when hosted through /relay
 	Names      []string `json:"names,omitempty"` // who's playing (friends list: "online now / join")
+	Skill      *int     `json:"skill,omitempty"` // average skill of the rated players on it (quick play matchmaking)
 	LastSeenMS int64    `json:"last_seen_ms"`    // epoch ms heartbeat stamp
 
 	lastSeen time.Time `json:"-"`
@@ -244,6 +245,30 @@ func handleList(w http.ResponseWriter, r *http.Request) {
 		list = append(list, &cp)
 	}
 	mu.RUnlock()
+
+	// Matchmaking: each server's average player skill (rated players only).
+	wanted := map[string]bool{}
+	for _, s := range list {
+		for _, n := range s.Names {
+			wanted[n] = true
+		}
+	}
+	if len(wanted) > 0 {
+		sk := skillByName(wanted)
+		for _, s := range list {
+			sum, cnt := 0, 0
+			for _, n := range s.Names {
+				if v, ok := sk[n]; ok {
+					sum += v
+					cnt++
+				}
+			}
+			if cnt > 0 {
+				avg := sum / cnt
+				s.Skill = &avg
+			}
+		}
+	}
 
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Players != list[j].Players {

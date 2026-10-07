@@ -253,11 +253,43 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 			rank++
 		}
 	}
-	writeJSON(w, map[string]any{"found": true, "rank": rank, "total": len(profiles), "profile": p})
+	res := map[string]any{"found": true, "rank": rank, "total": len(profiles), "profile": p}
+	if sk, ok := skillOf(p); ok {
+		res["skill"] = sk
+	}
+	writeJSON(w, res)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// skillOf: average XP per match — how well someone plays, not how long.
+// Fewer than 3 matches = not enough to judge (ok=false).
+func skillOf(p *Profile) (int, bool) {
+	if p == nil || p.Matches < 3 {
+		return 0, false
+	}
+	return p.XP / p.Matches, true
+}
+
+// skillByName: player name -> skill for the names currently on servers.
+func skillByName(names map[string]bool) map[string]int {
+	out := map[string]int{}
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	for _, p := range profiles {
+		if !names[p.Name] {
+			continue
+		}
+		if sk, ok := skillOf(p); ok {
+			// Same name on two profiles: keep the more experienced one.
+			if prev, has := out[p.Name]; !has || sk > prev {
+				out[p.Name] = sk
+			}
+		}
+	}
+	return out
 }
