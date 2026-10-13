@@ -73,8 +73,8 @@ func (w *wsConn) writeFrame(op byte, data []byte) error {
 	default:
 		hdr = append(hdr, 127, 0, 0, 0, 0, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 	}
-	w.c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	w.c.SetWriteDeadline(time.Now().Add(5 * time.Second)) // a stalled peer must not block the room
+	// A stalled peer must not block the room (#3): writes time out fast.
+	w.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := w.c.Write(append(hdr, data...)); err != nil {
 		w.dead = true
 		return err
@@ -96,12 +96,17 @@ func (w *wsConn) close() {
 }
 
 // readMessage returns (opcode, payload) of the next complete data message,
-// answering pings and reassembling fragments.
+// answering pings and reassembling fragments. Each read must land within
+// `idle` — a deadline any single byte keeps resetting would be a slowloris.
 func (w *wsConn) readMessage() (byte, []byte, error) {
+	return w.readMessageIdle(90 * time.Second)
+}
+
+func (w *wsConn) readMessageIdle(idle time.Duration) (byte, []byte, error) {
 	var msg []byte
 	var msgOp byte
 	for {
-		w.c.SetReadDeadline(time.Now().Add(90 * time.Second))
+		w.c.SetReadDeadline(time.Now().Add(idle))
 		h := make([]byte, 2)
 		if _, err := io.ReadFull(w.br, h); err != nil {
 			return 0, nil, err
@@ -198,6 +203,7 @@ type relayRoom struct {
 	mu      sync.Mutex
 	clients map[int32]*wsConn
 	created time.Time
+	closed  bool // #3: set when the host exits; joins after that are refused
 }
 
 var (
@@ -230,12 +236,22 @@ type relayHello struct {
 }
 
 func handleRelay(w http.ResponseWriter, r *http.Request) {
+	ip := sourceIP(r)
+	// #1: connection caps + a per-IP new-connection rate (join brute force /
+	// reconnect floods). Never-hello sockets used to be free and unbounded.
+	if !relayConnsPerIP.allow(ip) || !relayConnStart(ip) {
+		http.Error(w, "too many relay connections", http.StatusTooManyRequests)
+		return
+	}
+	defer relayConnEnd(ip)
 	ws, err := upgrade(w, r)
 	if err != nil {
 		return
 	}
 	defer ws.c.Close()
-	op, msg, err := ws.readMessage()
+	// #1: the hello must arrive promptly — an idle upgraded socket is the
+	// cheapest resource exhaustion there is.
+	op, msg, err := ws.readMessageIdle(10 * time.Second)
 	if err != nil || op != 0x1 {
 		return
 	}
@@ -246,7 +262,7 @@ func handleRelay(w http.ResponseWriter, r *http.Request) {
 	}
 	switch hello.Op {
 	case "host":
-		relayHost(ws, hello, sourceIP(r))
+		relayHost(ws, hello, ip)
 	case "join":
 		relayJoin(ws, strings.ToUpper(strings.TrimSpace(hello.Code)))
 	default:
@@ -279,14 +295,18 @@ func relayHost(ws *wsConn, hello relayHello, ip string) {
 	log.Printf("relay: room %s hosted (%s)", room.code, hello.Name)
 	ws.text(map[string]interface{}{"op": "hosted", "code": room.code, "id": 1})
 	defer func() {
-		roomsMu.Lock()
-		delete(rooms, room.code)
-		roomsMu.Unlock()
+		// #3: mark the room closed BEFORE pulling it from the map, then close
+		// clients — a joiner that fetched the room pointer mid-shutdown must
+		// see closed=true when it takes room.mu, not attach to a dead room.
 		room.mu.Lock()
+		room.closed = true
 		for _, c := range room.clients {
 			c.close()
 		}
 		room.mu.Unlock()
+		roomsMu.Lock()
+		delete(rooms, room.code)
+		roomsMu.Unlock()
 		log.Printf("relay: room %s closed", room.code)
 	}()
 	for {
@@ -300,6 +320,7 @@ func relayHost(ws *wsConn, hello relayHello, ip string) {
 				room.mu.Lock()
 				if c, ok := room.clients[m.ID]; ok {
 					c.close()
+					delete(room.clients, m.ID)
 				}
 				room.mu.Unlock()
 			}
@@ -313,7 +334,12 @@ func relayHost(ws *wsConn, hello relayHello, ip string) {
 		room.mu.Lock()
 		for id, c := range room.clients {
 			if target == 0 || target == id || (target < 0 && -target != id) {
-				c.writeFrame(0x2, payload)
+				// #3: drop a peer the moment its write fails — a dead conn in
+				// the map just generates error-writes for up to 90 s.
+				if c.writeFrame(0x2, payload) != nil {
+					c.close()
+					delete(room.clients, id)
+				}
 			}
 		}
 		room.mu.Unlock()
@@ -329,6 +355,14 @@ func relayJoin(ws *wsConn, code string) {
 		return
 	}
 	room.mu.Lock()
+	// #3: the host may have exited between the map lookup and this lock — its
+	// defer sets closed under room.mu. Joining a dead room left the client
+	// "connected" forever with no traffic and no error.
+	if room.closed {
+		room.mu.Unlock()
+		ws.text(map[string]string{"op": "error", "msg": "no game with that code (it may have ended)"})
+		return
+	}
 	if len(room.clients) >= relayMaxClients {
 		room.mu.Unlock()
 		ws.text(map[string]string{"op": "error", "msg": "that game is full"})
@@ -377,6 +411,18 @@ func relayRoomExists(code string) bool {
 	defer roomsMu.Unlock()
 	_, ok := rooms[code]
 	return ok
+}
+
+// relayRoomHostIP returns the hosting address recorded for a live room (#2:
+// only that address may register a /list entry for the code).
+func relayRoomHostIP(code string) (string, bool) {
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+	room, ok := rooms[code]
+	if !ok {
+		return "", false
+	}
+	return room.ip, true
 }
 
 func clip(s string, n int) string {

@@ -52,6 +52,7 @@ type Server struct {
 	Names      []string `json:"names,omitempty"` // who's playing (friends list: "online now / join")
 	Skill      *int     `json:"skill,omitempty"` // average skill of the rated players on it (quick play matchmaking)
 	LastSeenMS int64    `json:"last_seen_ms"`    // epoch ms heartbeat stamp
+	AgeMS      int64    `json:"age_ms"`          // #3: ms since the last heartbeat (set in /list)
 
 	lastSeen time.Time `json:"-"`
 }
@@ -115,7 +116,10 @@ func main() {
 
 	host := net.JoinHostPort(*addr, fmt.Sprintf("%d", *port))
 	log.Printf("soldat-master-server listening on http://%s (ttl=%s)", host, *ttl)
-	hs := &http.Server{Addr: host, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+	// #1: body-size caps alone don't stop trickled bodies — bound read time too.
+	// (/relay is hijacked before these apply, so the WebSocket path is unaffected.)
+	hs := &http.Server{Addr: host, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
 	if err := hs.ListenAndServe(); err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
@@ -176,6 +180,12 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	ip := sourceIP(r)
+	// #1: per-IP rate cap — heartbeats are ~2/min, anything near 8/min is abuse.
+	if !registerPerIP.allow(ip) {
+		http.Error(w, "too many registrations", http.StatusTooManyRequests)
+		return
+	}
 	var req registerReq
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -183,15 +193,27 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relay := strings.ToUpper(strings.TrimSpace(req.Relay))
-	if relay != "" && !relayRoomExists(relay) {
-		http.Error(w, "unknown relay code", http.StatusBadRequest)
-		return
+	if relay != "" {
+		// #2: the room code is public (it's in /list so players can join), so
+		// only the host's own address may register a listing for it.
+		hostIP, ok := relayRoomHostIP(relay)
+		if !ok {
+			http.Error(w, "unknown relay code", http.StatusBadRequest)
+			return
+		}
+		if hostIP != ip {
+			http.Error(w, "only the relay host may register this game", http.StatusForbidden)
+			return
+		}
 	}
 	if relay == "" && (req.Port <= 0 || req.Port > 65535) {
 		http.Error(w, "invalid port", http.StatusBadRequest)
 		return
 	}
-	ip := sourceIP(r)
+	// #1: counts must be sane — the list is sorted by Players, so a fake 9999
+	// would pin a grief entry to the top of everyone's browser.
+	req.Max = clampInt(req.Max, 1, 64)
+	req.Players = clampInt(req.Players, 0, req.Max)
 	key := fmt.Sprintf("%s:%d", ip, req.Port)
 	if relay != "" {
 		key = relay // relay games are joined by code, not address
@@ -199,18 +221,34 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	mu.Lock()
 	srv, ok := servers[key]
-	if !ok && len(servers) >= 1000 {
-		mu.Unlock()
-		http.Error(w, "server list full", http.StatusServiceUnavailable)
-		return
+	if !ok {
+		// #1: one IP can't fill the global list with spoofed ports.
+		perIP := 0
+		for _, s := range servers {
+			if s.IP == ip {
+				perIP++
+			}
+		}
+		if perIP >= maxServersPerIP {
+			mu.Unlock()
+			http.Error(w, "too many servers from this address", http.StatusTooManyRequests)
+			return
+		}
+		if len(servers) >= 1000 {
+			mu.Unlock()
+			http.Error(w, "server list full", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	if !ok {
 		srv = &Server{ID: key, IP: ip, Port: req.Port}
 		servers[key] = srv
 	}
-	srv.Name = clip(req.Name, 48)
-	srv.Map = clip(req.Map, 48)
-	srv.Mode = clip(req.Mode, 24)
+	// #1: cleanText (not clip) — control characters must not reach the JSON
+	// list and client UIs.
+	srv.Name = cleanText(req.Name, 48)
+	srv.Map = cleanText(req.Map, 48)
+	srv.Mode = cleanText(req.Mode, 24)
 	srv.Players = req.Players
 	srv.Max = req.Max
 	srv.Password = req.Password
@@ -240,8 +278,9 @@ func handleList(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	for _, s := range servers {
 		cp := *s
-		// expose age as seconds so clients can sort/ping-ish
-		cp.LastSeenMS = now.Sub(s.lastSeen).Milliseconds()
+		// #3: age as its own field — last_seen_ms stays the epoch stamp it's
+		// documented to be (it used to be silently repurposed as age here).
+		cp.AgeMS = now.Sub(s.lastSeen).Milliseconds()
 		list = append(list, &cp)
 	}
 	mu.RUnlock()

@@ -117,27 +117,51 @@ func handleMapUpload(w http.ResponseWriter, r *http.Request) {
 			recent = append(recent, t)
 		}
 	}
-	uploadsByIP[ip] = recent
+	if len(recent) == 0 {
+		// #6: no live entries — drop the key so the map doesn't grow forever.
+		delete(uploadsByIP, ip)
+	} else {
+		uploadsByIP[ip] = recent
+	}
 	if len(recent) >= uploadsPerDay {
 		mapsMu.Unlock()
 		http.Error(w, "upload limit reached, try tomorrow", http.StatusTooManyRequests)
 		return
 	}
+	// #6: reserve the slot BEFORE parsing — the check used to happen before
+	// the body was read, so N parallel uploads from one IP all passed it.
+	// Rolled back below if the upload turns out invalid.
+	uploadsByIP[ip] = append(uploadsByIP[ip], now)
+	reserved := true
 	mapsMu.Unlock()
+	unreserve := func() {
+		if !reserved {
+			return
+		}
+		reserved = false
+		mapsMu.Lock()
+		if ts := uploadsByIP[ip]; len(ts) > 0 && ts[len(ts)-1].Equal(now) {
+			uploadsByIP[ip] = ts[:len(ts)-1]
+		}
+		mapsMu.Unlock()
+	}
 
 	var req uploadReq
 	r.Body = http.MaxBytesReader(w, r.Body, maxMapBytes+8<<10)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		unreserve()
 		http.Error(w, "bad json or map too big", http.StatusBadRequest)
 		return
 	}
 	var m map[string]any
 	if len(req.Map) == 0 || len(req.Map) > maxMapBytes || json.Unmarshal(req.Map, &m) != nil {
+		unreserve()
 		http.Error(w, "map must be a JSON object under 512 KB", http.StatusBadRequest)
 		return
 	}
 	pls, _ := m["platforms"].([]any)
 	if len(pls) < 1 || len(pls) > 20000 {
+		unreserve()
 		http.Error(w, "map needs at least one platform", http.StatusBadRequest)
 		return
 	}
@@ -163,22 +187,35 @@ func handleMapUpload(w http.ResponseWriter, r *http.Request) {
 
 	mapsMu.Lock()
 	defer mapsMu.Unlock()
+	// Rollback for the reserved quota slot, inlined because this lock is held.
+	dropReserved := func() {
+		if !reserved {
+			return
+		}
+		reserved = false
+		if ts := uploadsByIP[ip]; len(ts) > 0 && ts[len(ts)-1].Equal(now) {
+			uploadsByIP[ip] = ts[:len(ts)-1]
+		}
+	}
 	if e, ok := mapIndex[id]; ok {
+		dropReserved() // a duplicate costs no quota (matches the old behaviour)
 		writeJSON(w, map[string]any{"ok": true, "id": id, "existing": true, "name": e.Name})
 		return
 	}
 	if len(mapIndex) >= maxMaps {
+		dropReserved()
 		http.Error(w, "map library is full", http.StatusInsufficientStorage)
 		return
 	}
 	if err := os.WriteFile(filepath.Join(mapsDir, id+".json"), body, 0o644); err != nil {
+		dropReserved()
 		http.Error(w, "could not store map", http.StatusInternalServerError)
 		return
 	}
 	mapIndex[id] = &MapEntry{ID: id, Name: name, Author: cleanText(req.Author, 24), Size: len(body),
 		Platforms: len(pls), Modes: strings.Join(modes, " "), UpMS: now.UnixMilli()}
-	uploadsByIP[ip] = append(uploadsByIP[ip], now)
 	mapsDirty = true
+	reserved = false // the reserved slot became the real one
 	writeJSON(w, map[string]any{"ok": true, "id": id})
 }
 

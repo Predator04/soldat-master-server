@@ -33,6 +33,9 @@ type Profile struct {
 	Matches int    `json:"m"`
 	XP      int    `json:"xp"`
 	LastMS  int64  `json:"last_ms"`
+	// #4: consecutive matches reported with kills but zero deaths — used to
+	// spot godmode farming (a real player eventually dies).
+	cleanStreak int `json:"-"`
 }
 
 type reportPlayer struct {
@@ -50,11 +53,16 @@ type reportReq struct {
 }
 
 var (
-	statsMu    sync.Mutex
+	statsMu sync.RWMutex
 	profiles   = map[string]*Profile{}
 	statsDirty bool
 	statsFile  string
 	idRe       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// #5: bump on every accepted report; the sorted board is cached against it.
+	statsVersion uint64
+	boardCache   []*Profile
+	boardVersion uint64
+	boardRanks   = map[string]int{}
 )
 
 func dataDir() string {
@@ -175,20 +183,41 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		if nm := cleanText(rp.Name, 32); nm != "" {
 			p.Name = nm
 		}
-		p.Kills += clampInt(rp.Kills, 0, 1000)
-		p.Deaths += clampInt(rp.Deaths, 0, 1000)
-		p.Caps += clampInt(rp.Caps, 0, 100)
+		// #4: velocity caps — a report is one match; anything beyond these
+		// bounds is farming or a broken client, not play.
+		kills := clampInt(rp.Kills, 0, 200)
+		deaths := clampInt(rp.Deaths, 0, 300)
+		caps := clampInt(rp.Caps, 0, 20)
 		if rp.Played {
 			p.Matches++
 			if rp.Win {
 				p.Wins++
 			}
+			// #4: godmode heuristic — dozens of kill-scoring matches in a row
+			// without a single death doesn't happen in this game. Freeze the
+			// kill/cap growth (wins/matches still count) until a death lands.
+			if kills > 0 && deaths == 0 {
+				p.cleanStreak++
+				if p.cleanStreak > 40 {
+					log.Printf("stats: %s kill growth frozen (%d death-free matches)", p.Name, p.cleanStreak)
+					kills = 0
+					caps = 0
+				}
+			} else if deaths > 0 {
+				p.cleanStreak = 0
+			}
 		}
+		p.Kills += kills
+		p.Deaths += deaths
+		p.Caps += caps
 		p.XP = xpFor(p.Kills, p.Caps, p.Wins, p.Matches)
 		p.LastMS = now
 		n++
 	}
-	statsDirty = statsDirty || n > 0
+	if n > 0 {
+		statsDirty = true
+		statsVersion++
+	}
 	statsMu.Unlock()
 	writeJSON(w, map[string]int{"ok": n})
 }
@@ -212,14 +241,47 @@ func sortedProfiles() []*Profile {
 	return list
 }
 
+// boardLocked returns the sorted board, cached against statsVersion (#5: the
+// old code sorted every profile on every /leaderboard and scanned them all on
+// every /profile). Caller must hold statsMu (any mode); the cache is rebuilt
+// only by callers holding the write lock.
+func boardLocked(rebuildIfStale bool) []*Profile {
+	if boardVersion == statsVersion && boardCache != nil {
+		return boardCache
+	}
+	if !rebuildIfStale {
+		return nil
+	}
+	boardCache = sortedProfiles()
+	boardRanks = make(map[string]int, len(boardCache))
+	for i, p := range boardCache {
+		boardRanks[p.ID] = i + 1
+	}
+	boardVersion = statsVersion
+	return boardCache
+}
+
 func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
 	n = clampInt(n, 1, 100)
 	if r.URL.Query().Get("n") == "" {
 		n = 50
 	}
-	statsMu.Lock()
-	list := sortedProfiles()
+	// Fast path under the read lock; a stale cache is rebuilt once under the
+	// write lock. Rows are struct copies, built under the lock, so a report
+	// landing mid-encode can't tear a profile.
+	statsMu.RLock()
+	list := boardLocked(false)
+	if list == nil {
+		statsMu.RUnlock()
+		statsMu.Lock()
+		list = boardLocked(true)
+		statsMu.Unlock()
+		statsMu.RLock()
+	}
+	if n > len(list) {
+		n = len(list)
+	}
 	out := make([]boardRow, 0, n)
 	for i, p := range list {
 		if i >= n {
@@ -230,7 +292,7 @@ func handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	total := len(list)
-	statsMu.Unlock()
+	statsMu.RUnlock()
 	writeJSON(w, map[string]any{"total": total, "players": out})
 }
 
@@ -240,22 +302,31 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	statsMu.Lock()
-	defer statsMu.Unlock()
+	statsMu.RLock()
+	// #5: rank comes from the cached board instead of a scan of every profile;
+	// a stale cache is rebuilt once under the write lock.
+	if boardLocked(false) == nil {
+		statsMu.RUnlock()
+		statsMu.Lock()
+		boardLocked(true)
+		statsMu.Unlock()
+		statsMu.RLock()
+	}
 	p := profiles[id]
 	if p == nil {
-		writeJSON(w, map[string]any{"found": false, "total": len(profiles)})
+		total := len(profiles)
+		statsMu.RUnlock()
+		writeJSON(w, map[string]any{"found": false, "total": total})
 		return
 	}
-	rank := 1
-	for _, o := range profiles {
-		if o.XP > p.XP || (o.XP == p.XP && o.LastMS < p.LastMS) {
-			rank++
-		}
-	}
-	res := map[string]any{"found": true, "rank": rank, "total": len(profiles), "profile": p}
-	if sk, ok := skillOf(p); ok {
-		res["skill"] = sk
+	rank := boardRanks[id]
+	total := len(profiles)
+	cp := *p
+	skill, hasSkill := skillOf(p)
+	statsMu.RUnlock()
+	res := map[string]any{"found": true, "rank": rank, "total": total, "profile": cp}
+	if hasSkill {
+		res["skill"] = skill
 	}
 	writeJSON(w, res)
 }
@@ -278,8 +349,8 @@ func skillOf(p *Profile) (int, bool) {
 // skillByName: player name -> skill for the names currently on servers.
 func skillByName(names map[string]bool) map[string]int {
 	out := map[string]int{}
-	statsMu.Lock()
-	defer statsMu.Unlock()
+	statsMu.RLock()
+	defer statsMu.RUnlock()
 	for _, p := range profiles {
 		if !names[p.Name] {
 			continue
