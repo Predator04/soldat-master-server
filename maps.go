@@ -109,6 +109,13 @@ func handleMapUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := sourceIP(r)
+	// #7: cap ATTEMPTS regardless of outcome — failed uploads (bad JSON,
+	// oversized body) unreserve their quota slot, so without this a single
+	// address could stream ~520 KB bodies at the JSON decoder forever.
+	if !uploadAttemptsPerIP.allow(ip) {
+		http.Error(w, "too many upload attempts, slow down", http.StatusTooManyRequests)
+		return
+	}
 	now := time.Now()
 	mapsMu.Lock()
 	recent := uploadsByIP[ip][:0]

@@ -113,13 +113,17 @@ func saveStats() {
 	}
 	b, _ := json.Marshal(list)
 	statsDirty = false
-	statsMu.Unlock()
+	// #7: keep the lock through the write+rename — the SIGTERM save used to
+	// race the periodic save onto the same .tmp path and could corrupt
+	// stats.json (which loads as total loss on restart).
 	tmp := statsFile + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		log.Printf("stats: save failed: %v", err)
+		statsMu.Unlock()
 		return
 	}
 	_ = os.Rename(tmp, statsFile)
+	statsMu.Unlock()
 }
 
 // trustedReporter: loopback (game server on this box) or the shared key.
@@ -303,9 +307,11 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statsMu.RLock()
-	// #5: rank comes from the cached board instead of a scan of every profile;
-	// a stale cache is rebuilt once under the write lock.
-	if boardLocked(false) == nil {
+	// #5's cache with a #7 fix: a report can land between the rebuild and
+	// this re-lock, leaving a brand-new profile absent from boardRanks (Go
+	// would report rank 0). Retry a few times; beyond that the rank is at
+	// worst one report stale (still nonzero for any existing profile).
+	for i := 0; i < 4 && boardLocked(false) == nil; i++ {
 		statsMu.RUnlock()
 		statsMu.Lock()
 		boardLocked(true)

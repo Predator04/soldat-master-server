@@ -52,9 +52,12 @@ func (l *ipLimiter) allow(ip string) bool {
 }
 
 var (
-	// /register: heartbeats arrive every ~30 s (2/min per host). 16/min allows
-	// a full NAT of hosts behind one address without grief room for floods.
-	registerPerIP = newIPLimiter(16, time.Minute)
+	// /register: heartbeats arrive every ~30 s (2/min per host). 24/min lets
+	// a full NAT of hosts behind one address retry through jitter and bursts.
+	registerPerIP = newIPLimiter(24, time.Minute)
+	// /maps/upload ATTEMPTS (valid or not) — failures don't consume the
+	// daily quota (#7), so the body-parse cost needs its own cap.
+	uploadAttemptsPerIP = newIPLimiter(30, time.Minute)
 	// /relay: new WebSocket connections per IP per minute. Covers join-code
 	// brute force and reconnect floods; real play uses a fraction of this.
 	relayConnsPerIP = newIPLimiter(30, time.Minute)

@@ -397,22 +397,6 @@ func relayJoin(ws *wsConn, code string) {
 	}
 }
 
-// relayRooms is shown on the dashboard / used by /health.
-func relayRooms() int {
-	roomsMu.Lock()
-	defer roomsMu.Unlock()
-	return len(rooms)
-}
-
-// relayRoomExists reports whether a relay code is a live room (so /register
-// can't list made-up relay games).
-func relayRoomExists(code string) bool {
-	roomsMu.Lock()
-	defer roomsMu.Unlock()
-	_, ok := rooms[code]
-	return ok
-}
-
 // relayRoomHostIP returns the hosting address recorded for a live room (#2:
 // only that address may register a /list entry for the code).
 func relayRoomHostIP(code string) (string, bool) {
