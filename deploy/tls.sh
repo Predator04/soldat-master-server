@@ -28,18 +28,25 @@ $DOMAIN {
 }
 CADDY
 
-# The Go server binds 0.0.0.0:8080; keep it loopback-only once Caddy fronts it.
-# (Leave 8080 open for one game release so old clients transition, then drop
-# the Oracle ingress rule for 8080.)
-mkdir -p /etc/systemd/system/soldat-master.service.d
-cat > /etc/systemd/system/soldat-master.service.d/tls.conf <<UNIT
+# Firewall: Oracle Ubuntu images use RAW iptables with a catch-all REJECT —
+# `ufw allow` silently does nothing there (found the hard way). Insert ACCEPT
+# rules ahead of the REJECT and persist.
+iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
+iptables -C INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || iptables -I INPUT 2 -p tcp --dport 443 -j ACCEPT
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+
+# Optional: bind the Go server to loopback only (plain 8080 goes away) once
+# every player build defaults to https — run with LOOPBACK=1 when that day
+# comes, and drop the 8080 Oracle ingress rule too.
+if [ "${LOOPBACK:-0}" = "1" ]; then
+  mkdir -p /etc/systemd/system/soldat-master.service.d
+  cat > /etc/systemd/system/soldat-master.service.d/tls.conf <<UNIT
 [Service]
 ExecStart=
 ExecStart=/opt/soldat/soldat-master -port 8080 -addr 127.0.0.1
 UNIT
-
-ufw allow 80/tcp 2>/dev/null || true
-ufw allow 443/tcp 2>/dev/null || true
+fi
 systemctl daemon-reload
 systemctl enable --now caddy
 systemctl restart caddy soldat-master
