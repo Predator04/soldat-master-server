@@ -331,18 +331,39 @@ func relayHost(ws *wsConn, hello relayHello, ip string) {
 		}
 		target := int32(binary.LittleEndian.Uint32(msg[:4]))
 		payload := msg[4:]
+		// Snapshot the targets under the lock, write OUTSIDE it: a stalled
+		// peer's 5 s write deadline used to block joins/kicks for the whole
+		// room while room.mu was held (review nit — latency, never deadlock).
+		type tgt struct {
+			id int32
+			c  *wsConn
+		}
 		room.mu.Lock()
+		targets := make([]tgt, 0, len(room.clients))
 		for id, c := range room.clients {
 			if target == 0 || target == id || (target < 0 && -target != id) {
-				// #3: drop a peer the moment its write fails — a dead conn in
-				// the map just generates error-writes for up to 90 s.
-				if c.writeFrame(0x2, payload) != nil {
-					c.close()
-					delete(room.clients, id)
-				}
+				targets = append(targets, tgt{id, c})
 			}
 		}
 		room.mu.Unlock()
+		var failed []tgt
+		for _, t := range targets {
+			if t.c.writeFrame(0x2, payload) != nil {
+				// #3: drop a peer the moment its write fails — a dead conn in
+				// the map just generates error-writes for up to 90 s.
+				t.c.close()
+				failed = append(failed, t)
+			}
+		}
+		if len(failed) > 0 {
+			room.mu.Lock()
+			for _, t := range failed {
+				if cur, ok := room.clients[t.id]; ok && cur == t.c {
+					delete(room.clients, t.id)
+				}
+			}
+			room.mu.Unlock()
+		}
 	}
 }
 
