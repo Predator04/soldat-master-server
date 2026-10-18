@@ -16,7 +16,7 @@ reject() {
 
 # Missing featured.json -> plain CTF, bans cleared.
 l=$(gen)
-expect missing "$l" "--dedicated --port 7777 --mode ctf --bans= --register http://127.0.0.1:8080 \"--name=Soldat Reborn Official\""
+expect missing "$l" "--dedicated --port 7777 --mode ctf --bans= --register http://127.0.0.1:8080 \"--name=Tracerfall Official\""
 
 # Active week with bans (one has a space -> quoted for systemd).
 tomorrow=$(date -u -d tomorrow +%F)
