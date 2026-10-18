@@ -27,6 +27,23 @@ go build -o soldat-master .
 ./soldat-master -port 8080
 ```
 
+## Production deployment (the live server)
+
+The public instance runs on Oracle Cloud free tier at
+`https://161-153-9-69.sslip.io` with:
+
+- **TLS** — Caddy in front (Let's Encrypt, auto-renew), proxying 443 → 127.0.0.1:8080
+  and upgrading `/relay` to `wss://`. One-command setup: `deploy/tls.sh` (opens the
+  firewall with raw iptables — Oracle images REJECT by default and `ufw` is inert
+  there; optional `LOOPBACK=1` retires plain 8080 once clients are on HTTPS).
+- **Abuse limits** (`limits.go`) — register 24/min per IP and ≤8 servers per IP;
+  relay 30 new connections/min per IP, ≤16 open per IP / 1000 global, 10 s hello
+  deadline; map uploads 20/day per IP with attempt throttling; HTTP read timeouts.
+- **Backups** — daily cron (`/usr/local/bin/soldat-backup.sh`) tars stats.json,
+  the maps dir and the TLS/firewall config, 14-day rotation.
+- **Updates** — `deploy/update.sh` rebuilds from this repo's master and restarts
+  the systemd unit.
+
 The port is configurable three ways (in priority order: `-port` flag, then
 `SOLDAT_MASTER_PORT` / `PORT` env vars, then the 8080 default):
 
