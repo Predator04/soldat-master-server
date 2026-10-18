@@ -15,7 +15,7 @@ GODOT_VER="4.7.2"
 REPO="Predator04/Soldat-Reborn"
 RAW="https://raw.githubusercontent.com/Predator04/soldat-master-server/master"
 PUBLIC_IP="${PUBLIC_IP:-161.153.9.69}"
-NAME="${SERVER_NAME:-Soldat Reborn Official}"
+NAME="${SERVER_NAME:-Tracerfall Official}"
 DIR="${SOLDAT_GAME_DIR:-/opt/soldat-game}"
 mkdir -p "$DIR"; cd "$DIR"
 
