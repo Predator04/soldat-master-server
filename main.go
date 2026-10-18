@@ -94,6 +94,7 @@ func main() {
 	http.HandleFunc("/maps", handleMapList)
 	http.HandleFunc("/maps/get", handleMapGet)
 	http.HandleFunc("/maps/upload", handleMapUpload)
+	http.HandleFunc("/news", handleNews)
 	loadStats()
 	loadMaps()
 	go saveStatsLoop()

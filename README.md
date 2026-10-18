@@ -108,6 +108,7 @@ use `https://your-domain` as the master URL.
 | GET | `/list` | JSON list of live servers |
 | GET | `/` | HTML dashboard (auto-refresh) |
 | GET | `/health` | `{"ok":true,"servers":N}` for uptime checks |
+| GET | `/news` | the main menu's news line (below) |
 
 `/register` body:
 
@@ -135,6 +136,72 @@ use `https://your-domain` as the master URL.
      "password":false,"version":"1.11.0","last_seen_ms":1200}
   ]
 }
+```
+
+## News line (`/news`)
+
+The game's main menu shows one dismissible line under the version button,
+fetched from `GET /news` (at most every 10 minutes per player):
+
+```json
+{"text":"v1.35 is out: weekly featured server!","url":"https://github.com/Predator04/Soldat-Reborn/releases","until_ms":1761609600000}
+```
+
+or `{}` when there is nothing to say. Edit `news.json` next to the binary
+(`SOLDAT_DATA_DIR` moves it with stats.json and maps/, `SOLDAT_NEWS_FILE`
+points at a specific file) — same fields as above; `until_ms` is the expiry
+in epoch ms, `0` or absent = no expiry. Changes are picked up without a
+restart. Text is plain (control characters and `[ ]` stripped, 120 chars),
+the link must be http(s). Responses carry `Cache-Control: max-age=60`.
+Players who hide a message with × don't see that text again; a new text
+shows for everyone.
+
+With no active news text, `/news` falls back to the official server's
+featured week (`SOLDAT_FEATURED_FILE`, default
+`/opt/soldat-game/featured.json`): its `note` if set, else
+"This week on the official server: Rambomatch on Voland".
+
+## Weekly featured mode/map (official game server)
+
+`deploy/game-server.sh` (the hourly update timer runs it) reads
+`/opt/soldat-game/featured.json`:
+
+```json
+{"mode":"rm","map":"Voland","note":"","until":"2026-10-25","bans":["Minigun"]}
+```
+
+- `mode` / `map`: names, aliases (`ctf`, `rm`, `gg`...) or indices the game
+  accepts (`scripts/game_lists.gd`). They are passed as `--mode`/`--map`
+  after the default `--mode ctf`; an unknown name is logged by the game and
+  the default kept, so a typo can't take the server down.
+- `bans`: weapon names (as in the host's weapon-ban grid) → `--bans=...`.
+  Every start passes `--bans=` so last week's bans never linger.
+- `until`: `YYYY-MM-DD` (through that day, UTC), RFC 3339, or epoch ms;
+  `0`/absent = no expiry. Expired or missing = plain CTF as before.
+- Any change (new week, edit, expiry) restarts `soldat-game`, through the
+  same path as a new game release (`featured.stamp` holds the hash).
+- The master's `/news` advertises the featured week automatically.
+
+**Rotation:** put a plan in `/opt/soldat-game/featured-plan.json` — a list
+of weeks (or `{"weeks":[...]}`) with the same fields, minus `until`:
+
+```json
+[{"mode":"rm","map":"Voland"},
+ {"mode":"ctf","map":"Ash","bans":["Barrett","Minigun"]},
+ {"mode":"gg","map":"Arena","note":"Gun Game week: climb the ladder on Arena"}]
+```
+
+`deploy/featured-rotate.sh [DIR]` (run by `game-server.sh` before it builds
+the unit) writes `featured.json` from entry *ISO week number mod list length*,
+valid through Sunday (UTC). A hand-written `featured.json` with
+`"manual": true` (special events) is left alone until you remove it.
+
+Dry runs and the script test (no root needed):
+
+```bash
+SOLDAT_GAME_DIR=/tmp/x bash deploy/game-server.sh --print-exec   # the ExecStart line
+bash deploy/featured_test.sh                                     # FEATURED-SCRIPT-TEST ok
+go test ./...                                                    # incl. /news
 ```
 
 ## Deploy (systemd)
