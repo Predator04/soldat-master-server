@@ -38,7 +38,9 @@ The public instance runs on Oracle Cloud free tier at
   there; optional `LOOPBACK=1` retires plain 8080 once clients are on HTTPS).
 - **Abuse limits** (`limits.go`) — register 24/min per IP and ≤8 servers per IP;
   relay 30 new connections/min per IP, ≤16 open per IP / 1000 global, 10 s hello
-  deadline; map uploads 20/day per IP with attempt throttling; HTTP read timeouts.
+  deadline; map uploads 20/day per IP with attempt throttling; level browser
+  240 list/get, 60 likes and 30 play reports per minute per IP, at most 4
+  likes / daily plays per address per level; HTTP read timeouts.
 - **Backups** — daily cron (`/usr/local/bin/soldat-backup.sh`) tars stats.json,
   the maps dir and the TLS/firewall config, 14-day rotation.
 - **Updates** — `deploy/update.sh` rebuilds from this repo's master and restarts
@@ -109,6 +111,12 @@ use `https://your-domain` as the master URL.
 | GET | `/` | HTML dashboard (auto-refresh) |
 | GET | `/health` | `{"ok":true,"servers":N}` for uptime checks |
 | GET | `/news` | the main menu's news line (below) |
+| GET | `/levels` | level browser list: sort, search, paging (below) |
+| GET | `/levels/get` | one level + its map, by `id` or share `code` |
+| POST | `/levels/upload` | publish a level (`/maps/upload` still works) |
+| POST | `/levels/like` | like / unlike (one per player id) |
+| POST | `/levels/play` | play report (once per player id per day) |
+| GET | `/maps`, `/maps/get` | the classic map library (older game builds) |
 
 `/register` body:
 
@@ -137,6 +145,63 @@ use `https://your-domain` as the master URL.
   ]
 }
 ```
+
+## Level sharing (`/levels`, game issue Predator04/Soldat-Reborn#288)
+
+Every shared map is a **level**: a title, author, share code, the modes it
+was built for, a thumbnail outline, plays and likes. The game's LEVELS
+browser and the map editor's Publish use these routes; `/maps` keeps working
+for older builds and reads / writes the same store (`maps/`).
+
+- `GET /levels?sort=hot|new|plays|likes&q=&page=0&per=24&pid=&ids=`
+  → `{"levels":[...], "page":0, "per":24, "total":N, "more":bool, "sort":"hot"}`.
+  `q` matches title / author (substring, any case) or a share code typed any
+  way (an exact code hit is listed first). `per` ≤ 48. `ids=a,b,c` (≤ 48)
+  returns exactly those levels in that order (the game's bookmarks; there
+  are no accounts). With `pid`, each level says `"liked": true` if that
+  player liked it.
+- Level fields: `id`, `code` (`7KQ2-MX9P-4HDA`), `title` (+ `name`, the same,
+  for old builds), `author`, `created_ms`, `size`, `platforms`, `modes`
+  (`"dm tdm ctf dom"`: dm always, tdm with ≥ 2 spawns, ctf / inf / htf / rm /
+  dom when the author placed that mode's objects), `theme`, `plays`,
+  `likes`, `downloads`, `hot`, `thumb`
+  (`{"w","h","c","r":[[x,y,w,h]],"p":[[rgb,x0,y0,...]],"f":[[x,y,kind]]}` in
+  a ≤ 320×128 box; colour `-1` = the game's default ground; kind 0/1 = blue /
+  red flag, 2 = neutral flag, 3 = domination point).
+- `GET /levels/get?id=<16 hex>` or `?code=<share code>` → `{"level":{...},"map":{...}}`
+  (counts a download), 404 if unknown.
+- `POST /levels/upload` `{"title","author","theme","map"}` → `{"ok":true,"id","code","title","modes"}`
+  (`"existing":true` for an identical map). Map ≤ 512 KB with ≥ 1 platform or
+  terrain polygon; title ≤ 32 characters, author ≤ 24; same daily quota as
+  before (20 per IP).
+- `POST /levels/like` `{"id","pid","like":true|false}` → `{"ok":true,"likes","liked"}`;
+  idempotent per player id.
+- `POST /levels/play` `{"id","pid"}` → `{"ok":true,"plays","counted"}`;
+  one play per player id per level per UTC day.
+- `pid` = an anonymous per-install id (16–64 hex characters) the game derives
+  from its random profile id; only a hash of it is stored, with a short hash
+  of the sender's address for the per-address caps.
+- **Hot this week** = for each of the last 7 days, (plays + 3 × likes) ×
+  0.5^(days ago / 2), plus a fading boost (2 → 0 over 3 days) for brand-new
+  levels so they get seen.
+- **Share codes**: 12 Crockford base-32 symbols derived from the level id
+  (no I, L, O, U; typed O reads as 0, I / L as 1; case, spaces and dashes
+  don't matter); a code that would spell a filtered word is skipped.
+- **Name filter** (`filter.go`): titles and author names are checked against
+  a small built-in list after leetspeak / accent normalisation ("Sh1t",
+  "f.u.c.k", "FUUUCK"); hits are masked with `*` (the game asks for another
+  title before it uploads — `scripts/name_filter.gd` there has the same
+  rules; keep the two lists in step).
+- **Storage**: still `maps/index.json` + `maps/<id>.json`. The level fields
+  are extra keys on each index entry, so an older binary can still read the
+  index (it ignores them, and drops them on its next save — roll back with a
+  copy of `index.json` if you care about the counts). Maps stored before
+  this version are filled in once on load (thumbnail, modes, code; logged
+  as "N migrated to level records").
+
+`go test ./...` covers sorting / hot, like idempotency, play counting,
+the filter, share codes, the upload → list → search → get flow, the legacy
+`/maps` shape and the index migration.
 
 ## News line (`/news`)
 

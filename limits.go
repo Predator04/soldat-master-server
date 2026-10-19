@@ -61,6 +61,12 @@ var (
 	// /relay: new WebSocket connections per IP per minute. Covers join-code
 	// brute force and reconnect floods; real play uses a fraction of this.
 	relayConnsPerIP = newIPLimiter(30, time.Minute)
+	// #288 level browser: list / get pages (each carries up to 48
+	// thumbnails), like toggles and play reports. Uploads share the map
+	// upload quota above (uploadsPerDay + uploadAttemptsPerIP).
+	levelReadsPerIP = newIPLimiter(240, time.Minute)
+	levelLikesPerIP = newIPLimiter(60, time.Minute)
+	levelPlaysPerIP = newIPLimiter(30, time.Minute)
 )
 
 const (

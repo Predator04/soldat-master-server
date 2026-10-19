@@ -94,6 +94,12 @@ func main() {
 	http.HandleFunc("/maps", handleMapList)
 	http.HandleFunc("/maps/get", handleMapGet)
 	http.HandleFunc("/maps/upload", handleMapUpload)
+	// #288 level sharing (levels.go) — same store as /maps.
+	http.HandleFunc("/levels", handleLevelList)
+	http.HandleFunc("/levels/get", handleLevelGet)
+	http.HandleFunc("/levels/upload", handleMapUpload)
+	http.HandleFunc("/levels/like", handleLevelLike)
+	http.HandleFunc("/levels/play", handleLevelPlay)
 	http.HandleFunc("/news", handleNews)
 	loadStats()
 	loadMaps()
