@@ -154,7 +154,6 @@ func TestNewsMethod(t *testing.T) {
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
 
-
 // Bomb Defusal (game #304) is mode 10: index, alias and name all resolve.
 func TestModeDisplayBombDefusal(t *testing.T) {
 	for _, in := range []string{"10", "bomb", "BD", "bomb defusal"} {

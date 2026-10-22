@@ -471,7 +471,6 @@ func TestThumbBudget(t *testing.T) {
 	}
 }
 
-
 // A level with two bomb sites is hinted for Bomb Defusal (game #304).
 func TestModeHintsBomb(t *testing.T) {
 	m := map[string]any{"player_spawn": []any{100.0, 100.0}, "bot_spawns": []any{[]any{200.0, 100.0}},
