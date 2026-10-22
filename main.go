@@ -101,15 +101,22 @@ func main() {
 	http.HandleFunc("/levels/like", handleLevelLike)
 	http.HandleFunc("/levels/play", handleLevelPlay)
 	http.HandleFunc("/news", handleNews)
+	// Predator04/Tracerfall#318 reserved names (names.go).
+	http.HandleFunc("/names/reserve", handleNameReserve)
+	http.HandleFunc("/names/mine", handleNameMine)
+	http.HandleFunc("/names/check", handleNameCheck)
 	loadStats()
 	loadMaps()
+	loadNames()
 	go saveStatsLoop()
+	go saveNamesLoop()
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
 		<-sig
 		saveStats()
 		saveMapIndex()
+		saveNames()
 		os.Exit(0)
 	}()
 	http.HandleFunc("/", handleDashboard)

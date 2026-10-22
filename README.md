@@ -40,8 +40,11 @@ The public instance runs on Oracle Cloud free tier at
   relay 30 new connections/min per IP, ≤16 open per IP / 1000 global, 10 s hello
   deadline; map uploads 20/day per IP with attempt throttling; level browser
   240 list/get, 60 likes and 30 play reports per minute per IP, at most 4
-  likes / daily plays per address per level; HTTP read timeouts.
-- **Backups** — daily cron (`/usr/local/bin/soldat-backup.sh`) tars stats.json,
+  likes / daily plays per address per level; reserved names 10 writes and
+  240 checks per minute per IP, at most 5 live reservations per address;
+  HTTP read timeouts.
+- **Backups** — daily cron (`/usr/local/bin/soldat-backup.sh`) tars stats.json
+  (add names.json beside it — see "Reserved names"),
   the maps dir and the TLS/firewall config, 14-day rotation.
 - **Updates** — `deploy/update.sh` rebuilds from this repo's master and restarts
   the systemd unit.
@@ -117,6 +120,9 @@ use `https://your-domain` as the master URL.
 | POST | `/levels/like` | like / unlike (one per player id) |
 | POST | `/levels/play` | play report (once per player id per day) |
 | GET | `/maps`, `/maps/get` | the classic map library (older game builds) |
+| POST | `/names/reserve` | reserve / change / release a player name (below) |
+| POST | `/names/mine` | a profile's reserved name + cooldown |
+| GET | `/names/check` | is a name reserved, and by whom (game servers ask on join) |
 
 `/register` body:
 
@@ -202,6 +208,36 @@ for older builds and reads / writes the same store (`maps/`).
 `go test ./...` covers sorting / hot, like idempotency, play counting,
 the filter, share codes, the upload → list → search → get flow, the legacy
 `/maps` shape and the index migration.
+
+## Reserved names (`/names`, game issue Predator04/Tracerfall#318)
+
+Anyone can join a game server under anyone's name. A player can reserve
+their name against their profile; game servers that list here ask before
+letting someone play under it and rename an impostor to `Player####`.
+
+- `POST /names/reserve` `{"id":"<32 hex profile id>","name":"Alice"}` →
+  `{"ok","status","name","owner","cooldown_s"[,"taken_by"]}`. `status`:
+  `reserved` (200), `taken` (409, `taken_by` = the reserved spelling),
+  `cooldown` (429, `cooldown_s` until a change is allowed), `short` /
+  `offensive` / `blocked` (400), `limit` (429, address cap), `full` (503).
+  `{"id","release":true}` gives the name up (`released`).
+- `POST /names/mine` `{"id"}` → `{"ok","name","owner","cooldown_s","set_ms"}`.
+- `GET /names/check?name=<name>[&pid=<64 hex profile hash>]` →
+  `{"name","key","reserved"[,"owner","display"][,"status"]}`; with `pid`,
+  `status` = `free` / `mine` / `taken` / `invalid` (+ `problem`).
+- **Identity**: `id` is the game's random per-install profile id (the same
+  one it sends a game server when joining). Only `sha256(lower(id))` is
+  stored — exactly the hash game servers keep (`Net.peer_profiles`) and the
+  leaderboard key, so a server compares the joiner's hash with `owner`.
+- **Rules**: one name per profile; a change (or a release) starts a 72 h
+  cooldown, re-spelling the same name doesn't. Names compare after the
+  filter's normalisation (`filterNorm`: case, leetspeak, accents folded,
+  non-letters dropped — "B0b", "b.o.b" and "bob" are one name), a clan tag
+  prefix `«TAG» ` is ignored. Refused: under 3 letters after normalisation,
+  anything `filter.go` masks, and the names the game hands out or uses
+  itself (`Player…`, `Bot N`, `Red Bot…` / `Blue Bot…`, SERVER, Host, Admin…).
+- **Storage**: `names.json` next to `stats.json` (`SOLDAT_DATA_DIR`), saved
+  every 20 s and on SIGTERM.
 
 ## News line (`/news`)
 
