@@ -165,3 +165,15 @@ func TestModeDisplayBombDefusal(t *testing.T) {
 		t.Fatalf("existing indices moved: modeDisplay(9) = %q", got)
 	}
 }
+
+// Zombie (game #314) is mode 11, appended after Bomb Defusal.
+func TestModeDisplayZombie(t *testing.T) {
+	for _, in := range []string{"11", "zombie", "ZM", "Zombie"} {
+		if got := modeDisplay(in); got != "Zombie" {
+			t.Fatalf("modeDisplay(%q) = %q", in, got)
+		}
+	}
+	if got := modeDisplay("10"); got != "Bomb Defusal" {
+		t.Fatalf("existing indices moved: modeDisplay(10) = %q", got)
+	}
+}
