@@ -470,3 +470,18 @@ func TestThumbBudget(t *testing.T) {
 		t.Fatal("empty map has a thumb")
 	}
 }
+
+
+// A level with two bomb sites is hinted for Bomb Defusal (game #304).
+func TestModeHintsBomb(t *testing.T) {
+	m := map[string]any{"player_spawn": []any{100.0, 100.0}, "bot_spawns": []any{[]any{200.0, 100.0}},
+		"bomb_sites": []any{map[string]any{"name": "A", "rect": []any{0.0, 0.0, 200.0, 150.0}},
+			map[string]any{"name": "B", "rect": []any{900.0, 0.0, 200.0, 150.0}}}}
+	if got := modeHints(m); got != "dm tdm bomb" {
+		t.Fatalf("modeHints = %q, want \"dm tdm bomb\"", got)
+	}
+	delete(m, "bomb_sites")
+	if got := modeHints(m); got != "dm tdm" {
+		t.Fatalf("modeHints without sites = %q", got)
+	}
+}

@@ -181,9 +181,11 @@ func activeUntil(until, nowMS int64) bool {
 
 // modeDisplay: featured.json may use the game's aliases or indices
 // (scripts/game_lists.gd MODE_NAMES); show the real name in the news line.
+// New modes are appended at the end (the indices are the game's: saves, the
+// wire protocol, dedicated --mode). Bomb Defusal = 10 (game #304).
 var modeNames = []string{"Deathmatch", "Teammatch", "Capture the Flag", "Infiltration",
-	"Hold the Flag", "Rambomatch", "Pointmatch", "Domination", "Battle Royale", "Gun Game"}
-var modeAliases = map[string]int{"dm": 0, "tdm": 1, "ctf": 2, "inf": 3, "htf": 4, "rm": 5, "pm": 6, "dom": 7, "br": 8, "gg": 9}
+	"Hold the Flag", "Rambomatch", "Pointmatch", "Domination", "Battle Royale", "Gun Game", "Bomb Defusal"}
+var modeAliases = map[string]int{"dm": 0, "tdm": 1, "ctf": 2, "inf": 3, "htf": 4, "rm": 5, "pm": 6, "dom": 7, "br": 8, "gg": 9, "bomb": 10, "bd": 10}
 
 func modeDisplay(m string) string {
 	m = strings.TrimSpace(m)

@@ -198,8 +198,8 @@ func vecList(v any) [][2]float64 {
 }
 
 // modeHints lists the modes a level is set up for (space separated, lower
-// case): dm always; tdm with two or more spawns; ctf / inf / htf / rm / dom
-// when the author placed that mode's objects. Every mode still runs on any
+// case): dm always; tdm with two or more spawns; ctf / inf / htf / rm / dom /
+// bomb when the author placed that mode's objects. Every mode still runs on any
 // map (the game falls back to default spots); these say which ones the
 // author built for.
 func modeHints(m map[string]any) string {
@@ -227,6 +227,10 @@ func modeHints(m map[string]any) string {
 	}
 	if len(vecList(m["dom_points"])) > 0 {
 		out = append(out, "dom")
+	}
+	// Bomb Defusal (game #304): two bomb sites [{name, rect: [x, y, w, h]}].
+	if sites, ok := m["bomb_sites"].([]any); ok && len(sites) >= 2 {
+		out = append(out, "bomb")
 	}
 	return strings.Join(out, " ")
 }
