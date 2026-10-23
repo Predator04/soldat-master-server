@@ -42,6 +42,8 @@ The public instance runs on Oracle Cloud free tier at
   240 list/get, 60 likes and 30 play reports per minute per IP, at most 4
   likes / daily plays per address per level; reserved names 10 writes and
   240 checks per minute per IP, at most 5 live reservations per address;
+  cloud saves 30 reads / 12 writes per minute and 20 new saves per day per
+  IP (48 KB each, 200k in all); join tickets 60 per minute per IP;
   HTTP read timeouts.
 - **Backups** — daily cron (`/usr/local/bin/soldat-backup.sh`) tars stats.json
   (add names.json beside it — see "Reserved names"),
@@ -123,6 +125,10 @@ use `https://your-domain` as the master URL.
 | POST | `/names/reserve` | reserve / change / release a player name (below) |
 | POST | `/names/mine` | a profile's reserved name + cooldown |
 | GET | `/names/check` | is a name reserved, and by whom (game servers ask on join) |
+| POST | `/cloud/get` | a profile-code cloud save (below) |
+| POST | `/cloud/put` | store a new version of a cloud save |
+| GET | `/auth/key` | the public key game servers verify join tickets with |
+| POST | `/auth/ticket` | a signed one-join ticket for a player |
 
 `/register` body:
 
@@ -225,10 +231,10 @@ letting someone play under it and rename an impostor to `Player####`.
 - `GET /names/check?name=<name>[&pid=<64 hex profile hash>]` →
   `{"name","key","reserved"[,"owner","display"][,"status"]}`; with `pid`,
   `status` = `free` / `mine` / `taken` / `invalid` (+ `problem`).
-- **Identity**: `id` is the game's random per-install profile id (the same
-  one it sends a game server when joining). Only `sha256(lower(id))` is
-  stored — exactly the hash game servers keep (`Net.peer_profiles`) and the
-  leaderboard key, so a server compares the joiner's hash with `owner`.
+- **Identity**: `id` is the game's random per-install profile id. Only
+  `sha256(lower(id))` is stored — the public id game servers learn from a
+  join ticket (`/auth`, below) and the leaderboard key, so a server compares
+  the joiner's verified id with `owner`.
 - **Rules**: one name per profile; a change (or a release) starts a 72 h
   cooldown, re-spelling the same name doesn't. Names compare after the
   filter's normalisation (`filterNorm`: case, leetspeak, accents folded,
@@ -238,6 +244,58 @@ letting someone play under it and rename an impostor to `Player####`.
   itself (`Player…`, `Bot N`, `Red Bot…` / `Blue Bot…`, SERVER, Host, Admin…).
 - **Storage**: `names.json` next to `stats.json` (`SOLDAT_DATA_DIR`), saved
   every 20 s and on SIGTERM.
+
+## Profile codes + cloud saves (`/cloud`, game issue Predator04/Tracerfall#323)
+
+The game shows each player a random **profile code** (24 symbols,
+`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`). Entering it on another device restores the
+profile there; this server keeps the backup. The code itself never arrives
+here.
+
+- `k` = `sha256("tracerfall-cloud-id:" + code)` (64 hex) is the save's
+  address. The game encrypts the save (AES-256 + HMAC, keys derived from the
+  code) before sending it, so `blob` is opaque base64 to this server: stats,
+  cosmetics, name, carried settings and the player's raw profile id are all
+  inside, readable only with the code. Nothing here is known to game servers.
+- `POST /cloud/get {"k"}` → `{"ok":true,"ver","fmt","set_ms","blob"}`, or
+  404 `{"status":"none"}`.
+- `POST /cloud/put {"k","base","fmt","blob"}` → `{"ok":true,"ver"}`.
+  Optimistic versions: `base` must be the stored `ver` (0 for a new save),
+  otherwise 409 `{"status":"conflict","ver","fmt","set_ms","blob"}` — the game
+  merges (per counter the larger progress wins) and puts again. 413 `big`
+  (blob > 48 KB of base64), 429 `limit` (20 new saves per address per day) or
+  rate limit, 503 `full` (200k saves).
+- **Storage**: one file per save, `cloud/<sha256("cloud:" + k)>.json` next to
+  stats.json (`SOLDAT_DATA_DIR`); file names are hashes of `k`, so a copy of
+  the directory doesn't hand out the addresses.
+
+## Join tickets (`/auth`, game issue Predator04/Tracerfall#324)
+
+Game servers used to receive each player's raw profile id, so a modified
+server could collect ids and play elsewhere as someone else. Now a joining
+game gets a ticket from here instead:
+
+1. the game server sends the joiner a random nonce (16–64 hex);
+2. the game `POST /auth/ticket {"id":"<32 hex profile id>","n":"<nonce>","srv":"<address it dialled>"}`
+   → `{"ok":true,"ticket","pub","exp_ms"}`;
+3. the game server checks the ticket with `GET /auth/key`
+   (`{"alg":"RS256","kid","pem"}`, PKIX public key) and the nonce it sent.
+
+`ticket` = `base64(payload) + "." + base64(signature)`: payload JSON
+`{"v":1,"pub","n","srv","iat","exp","kid"}` (`pub` = `sha256(lower(id))`, the
+leaderboard key / reserved-name owner; 5-minute expiry), signature = RSA
+PKCS#1 v1.5 over SHA-256 of the base64 payload text. A ticket only works for
+the connection whose nonce it carries, so collecting them is pointless.
+
+- **Key**: `ticket_key.pem` (RSA 2048, mode 0600) in the data dir, or
+  `SOLDAT_TICKET_KEY=<path>`; made on first start. Losing / replacing it is
+  harmless: tickets are short-lived and game servers fetch the key again when
+  a ticket stops verifying.
+- If this server can't be reached, game servers let players in unverified
+  (no reserved-name rights, not ranked, no admin by id).
+
+`go test ./...` covers cloud put / get / conflict / limits / restart and
+ticket signing, nonce / tamper / wrong key / expiry checks.
 
 ## News line (`/news`)
 

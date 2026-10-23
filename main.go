@@ -105,9 +105,16 @@ func main() {
 	http.HandleFunc("/names/reserve", handleNameReserve)
 	http.HandleFunc("/names/mine", handleNameMine)
 	http.HandleFunc("/names/check", handleNameCheck)
+	// Predator04/Tracerfall#323 cloud saves + #324 join tickets (profile.go).
+	http.HandleFunc("/cloud/get", handleCloudGet)
+	http.HandleFunc("/cloud/put", handleCloudPut)
+	http.HandleFunc("/auth/key", handleAuthKey)
+	http.HandleFunc("/auth/ticket", handleAuthTicket)
 	loadStats()
 	loadMaps()
 	loadNames()
+	loadCloud()
+	loadTicketKey()
 	go saveStatsLoop()
 	go saveNamesLoop()
 	go func() {
